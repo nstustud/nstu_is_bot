@@ -7,7 +7,6 @@ import pandas
 import sqlalchemy
 import telegram
 from rapidfuzz import fuzz, process
-from sqlalchemy import create_engine
 from telegram import (ForceReply, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, ReplyKeyboardRemove)
 from telegram.ext import (CallbackQueryHandler, CommandHandler,
@@ -34,8 +33,9 @@ USER_FREE_DAY="Сегодня не учишься, угомонись"
 
 days_dict = {1:'Пн', 2:'Вт',3:'Ср',4:'Чт',5:'Пт',6:'Сб',7:'Вс'}
 
+CANCEL_INPUT = -1
 ONE, TWO, THREE = range(3)
-engine = create_engine('postgresql://***REMOVED***:***REMOVED***@192.144.37.124:5432/demo')
+engine = sqlalchemy.create_engine('postgresql://***REMOVED***:***REMOVED***@192.144.37.124:5432/demo')
 
 
 def start(update, context):
@@ -48,7 +48,14 @@ def start(update, context):
 def timetable_markup(chosen_time):
     keyboard = [[InlineKeyboardButton(f"Расписание на текущий день {'✅' if chosen_time == 0 else ''}", callback_data=0)],
             [InlineKeyboardButton(f"Расписание на оставшуюся неделю {'✅' if chosen_time == 1 else ''}", callback_data=1)]]
-    return InlineKeyboardMarkup(keyboard)                                        
+    return InlineKeyboardMarkup(keyboard)
+
+def settings_markup(chosen_parameter):
+    keyboard = [[InlineKeyboardButton(f"Отменить ежедневную отправку{'✅' if chosen_parameter == 0 else ''}", callback_data=0)],
+                [InlineKeyboardButton(f"Выбрать время отправки расписания{'✅' if chosen_parameter == 1 else ''}", callback_data=1)],
+                [InlineKeyboardButton(f"Выбрать смещение времени перед парами {'✅' if chosen_parameter == 2 else ''}", callback_data=2)],
+                [InlineKeyboardButton("Назад", callback_data=CANCEL_INPUT)]]
+    return InlineKeyboardMarkup(keyboard)                                       
 
 def get_true_groups_name(input, group_names):
     score =  process.extract(translit(input.upper(),'ru'), group_names, scorer=fuzz.partial_ratio, limit=5)
@@ -136,8 +143,23 @@ def proceed_timetable(update, context):
 def proceed_news(update, context):
     update.message.reply_text('Пока не реализовано')
 
+def get_user_notify_mode(user_id):
+    user_timetable=""
+    with engine.connect() as conn:
+        result = conn.execute(sqlalchemy.text(f"SELECT send_msg_time FROM users.usergroup WHERE user_id = :uid"), uid = user_id)
+        if result.rowcount == 0:
+            return None
+        else:
+            send_msg_time = result.fetchone()['send_msg_time']
+            if (send_msg_time == None) or (not send_msg_time):
+                return 0
+            return 1
+
+
 def proceed_settings_start(update, context):
-    update.message.reply_text('Введите желаемое время\nФормат: hh:mm')
+    
+    update.message.reply_text('Настроечки', reply_markup=settings_markup(get_user_notify_mode(update.message.from_user.id))) #IN THE FUTETRE, CHANGE NUM IN MARKUP AS SELECT FROM DB GET USER RECIEVING MESSAGES MODE
+    #update.message.reply_text('Введите желаемое время\nФормат: hh:mm', reply_markup=ForceReply())
     return ONE
 
 def proceed_settings(update, context):
@@ -145,29 +167,37 @@ def proceed_settings(update, context):
         with engine.begin() as conn:
             job_id = ''
             user_time = datetime.datetime.strptime(update.message.text,'%H:%M')
-            #SELECT FROM DB. IF EXISTS,
-                               # DELETE task<at>, CREATE task<at>, UPDATE IN DB
-                            #ELSE
-                                #INSERT INTO DB, CREATE task<at>
-                                
-            group_names_query = conn.execute(sqlalchemy.text("SELECT send_msg_time FROM users.usergroup WHERE user_id=:uid AND send_msg_time IS NOT NULL"), uid=update.message.from_user.id)
-            if group_names_query.rowcount == 0:
-                conn.execute(sqlalchemy.text("UPDATE users.usergroup SET send_msg_time = :smt WHERE user_id=:uid"), uid=update.message.from_user.id, smt=user_time)
-            else:
-                conn.execute(sqlalchemy.text("UPDATE users.usergroup SET send_msg_time = :smt WHERE user_id=:uid"), uid=update.message.from_user.id, smt=user_time)
-            tmp = tempfile.NamedTemporaryFile(mode='r+t')
-            cmd = f'echo \"echo {update.message.from_user.id}\" | at -m {update.message.text}'
-            call(cmd, shell=True, stderr=tmp)
-            tmp.seek(0)
-            for line in tmp:
-                if 'job' in line:
-                    job_id = line.split()[1]
-            tmp.close()
-            return None
-            return TWO
+            group_names_query = conn.execute(sqlalchemy.text("SELECT job_id FROM users.usergroup WHERE user_id=:uid AND job_id IS NOT NULL"), uid=update.message.from_user.id)
+            if group_names_query.rowcount != 0:
+                old_job_id = group_names_query.fetchone()['job_id']
+                call(f'at -r {old_job_id}', shell=True)
+            job_id = create_at_job(update.message.from_user.id, update.message.text)
+            conn.execute(sqlalchemy.text("UPDATE users.usergroup SET (send_msg_time, job_id) = (:smt,:jid) WHERE user_id=:uid"), uid=update.message.from_user.id, smt=user_time, jid=int(job_id))
+            update.message.reply_text(f'Теперь вы будете ежедневно оповещаться в {update.message.text}', reply_markup=menu_keyboard_markup)
+            return ConversationHandler.END
 
     except Exception as e: #Ignored, becasue of INSERT ON CONFLICT
         logger.info(str(e))
+
+def create_at_job(user_id, time):
+    job_id = None
+    tmp = tempfile.NamedTemporaryFile(mode='r+t')
+    cmd = f'echo \"python3 send_daily.py {user_id}\" | at -m {time}'
+    call(cmd, shell=True, stderr=tmp)
+    tmp.seek(0)
+    for line in tmp:
+        if 'job' in line:
+            job_id = line.split()[1]
+    tmp.close()
+    return job_id
+
+def cancel_user_notifications(update, context):
+    try:
+        with engine.begin() as conn:
+            conn.execute(sqlalchemy.text("UPDATE users.usergroup SET (send_msg_time, job_id) = (NULL,NULL) WHERE user_id=:uid"), uid=update.from_user.id)
+        update.edit_message_text(text='Больше не присылаю уведомлений')
+    except: pass
+    return ConversationHandler.END
 
 
 def button(update, context):
@@ -203,6 +233,21 @@ def get_current_week():
     else:
         return datetime.date.today().isocalendar()[1] - datetime.date(datetime.date.today().year,9,1).isocalendar()[1] + 1
 
+def settings_controller(update, context):
+    query = update.callback_query
+
+    query.answer()
+    chosen_property = int(query.data)
+  
+    if chosen_property == 1: #SEND AT SPECIFIC TIME
+        return send_user_request_specific_time(query, context)
+    elif chosen_property == 0: #DON'T SEND NOTIFICATIONS TO USER
+        return cancel_user_notifications(query, context)
+
+def send_user_request_specific_time(update, context):
+    update.edit_message_text(text='Введите желаемое время\nФормат: hh:mm')
+    #update.message.reply_text('Введите желаемое время\nФормат: hh:mm', reply_markup=ForceReply())
+    return TWO
 
 def main():
     # Create the Updater and pass it your bot's token.
@@ -227,7 +272,8 @@ def main():
     settings_conversation_handler = ConversationHandler(
         entry_points=[MessageHandler(Filters.text('Настройки бота') & (~Filters.command), proceed_settings_start)],
         states={
-            ONE: [MessageHandler(Filters.text & (~Filters.command), proceed_settings)]
+            ONE: [CallbackQueryHandler(settings_controller)],
+            TWO: [MessageHandler(Filters.text & (~Filters.command), proceed_settings)]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
@@ -240,7 +286,7 @@ def main():
     dp.add_handler(news_handler)
     dp.add_handler(settings_conversation_handler)
     dp.add_handler(CallbackQueryHandler(button))
-#    dp.add_handler(MessageHandler(Filters.text, handle_users_reply))
+    #dp.add_handler(MessageHandler(Filters.text, handle_users_reply))
     # Start the Bot
     updater.start_polling()
 
