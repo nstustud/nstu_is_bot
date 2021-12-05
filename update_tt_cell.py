@@ -1,11 +1,13 @@
 import sqlalchemy
-import pandas
-import requests.exceptions, requests
+import requests
+import misc.config as config
 from get_user_token import get_user_token
 
-engine = sqlalchemy.create_engine('postgresql://***REMOVED***:***REMOVED***@192.144.37.124:5432/demo')
-ttcell = requests.get('https://api.ciu.nstu.ru/v1.0/data/simple/tt_cell',
-                                      cookies={'NstuSsoToken': get_user_token()})
+engine = sqlalchemy.create_engine(config.db_connection_string)
+ttcell = requests.get(
+    url='https://api.ciu.nstu.ru/v1.0/data/simple/tt_cell',
+    cookies={'NstuSsoToken': get_user_token(config.nstu_login, config.nstu_password)}
+)
 
 try:
     with engine.begin() as conn:

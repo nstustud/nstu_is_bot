@@ -1,0 +1,5 @@
+nstu_login = "****@stud.nstu.ru"
+nstu_password = "***********"
+db_connection_string = "postgresql://*username*:*password*@*ip*:*port*/*db_name*"
+bot_token = "******************"
+SQL_NOW = "now() AT TIME ZONE \'Asia/Novosibirsk\'"
