@@ -11,7 +11,7 @@ ttcell = requests.get(
 
 try:
     with engine.begin() as conn:
-        conn.execute(sqlalchemy.text('DELETE FROM test.test_table; INSERT INTO test.test_table (data) VALUES (:vl); DELETE FROM test.tt_cell; INSERT INTO test.tt_cell SELECT * FROM test.fill_tt_cell_view;'), vl=ttcell.text)
+        conn.execute(sqlalchemy.text('DELETE FROM test.test_table; INSERT INTO test.test_table (data) VALUES (:vl); DELETE FROM test.tt_cell; INSERT INTO test.tt_cell SELECT * FROM test.fill_tt_cell_view ON CONFLICT DO NOTHING;'), vl=ttcell.text)
 except Exception as e:
     print(e)
     with engine.begin() as conn:
